@@ -1,7 +1,7 @@
 import sys
 import ctypes
 import logging
-from multiprocessing import Queue
+from multiprocessing import Queue, shared_memory
 
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QRect, QByteArray, QTimer
@@ -42,28 +42,48 @@ class OverlayWindow(QWidget):
         # Set window-wide opacity (much cleaner than per-element alpha)
         self.setWindowOpacity(GLOBAL_OPACITY / 255.0)
 
-        # Load image for overlay
-        if image_bytes:
-            byte_array = QByteArray(image_bytes)
-            self.image = QPixmap()
-            if not self.image.loadFromData(byte_array):
-                # Failed to load from bytes, create dummy
-                log.error("Failed to load image from bytes. Creating dummy placeholder...")
-                self.image = QPixmap(1600, 900)
-                self.image.fill(QColor(255, 30, 30))
-        else:
-            # No bytes provided, create dummy
-            log.warning("No image bytes provided. Creating dummy placeholder...")
-            self.image = QPixmap(1600, 900)
-            self.image.fill(QColor(255, 30, 30))
+        # Initialize with dummy red box
+        self._create_dummy_image()
 
-        # Scale image once during initialization if needed (performance improvement)
-        if self.image.width() > WINDOW_WIDTH or self.image.height() > WINDOW_HEIGHT:
-            self.image = self.image.scaled(
-                WINDOW_WIDTH, WINDOW_HEIGHT,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+        # Load initial image if provided
+        if image_bytes:
+            self.update_image(image_bytes)
+
+        # Scale image
+        self.image = self.image.scaled(
+            WINDOW_WIDTH, WINDOW_HEIGHT,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+    def _create_dummy_image(self):
+        """Create a dummy red placeholder image"""
+        log.debug("Creating dummy red placeholder image")
+        self.image = QPixmap(1280, 720) # dummy 16:9 image
+        self.image.fill(QColor(255, 30, 30))
+
+    def update_image(self, image_bytes):
+        """Update the overlay image with new image data"""
+        try:
+            byte_array = QByteArray(image_bytes)
+            new_image = QPixmap()
+
+            if new_image.loadFromData(byte_array):
+                # Scale image
+                new_image = new_image.scaled(
+                    WINDOW_WIDTH, WINDOW_HEIGHT,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+
+                self.image = new_image
+                self.update()  # Trigger repaint
+                log.debug("Image updated successfully")
+            else:
+                log.error("Failed to load image from bytes")
+
+        except Exception as e:
+            log.error(f"Error updating image: {e}")
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -109,25 +129,15 @@ class OverlayWindow(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "ERROR")
 
 
-def run_qt(queue: Queue):
+def run_qt(image_bytes: bytes = None):
     log.debug("Starting Qt up...")
-
-    # Get initial image data from the queue
-    initial_image_bytes = None
-    try:
-        command = queue.get(timeout=5)
-        if command['type'] == 'INIT_IMAGE' and 'data' in command:
-            initial_image_bytes = command['data']
-            log.debug("Received image data from queue.")
-        else:
-            log.error("No initial image data in first queue item or wrong type.")
-    except Exception as e:
-        log.critical(f"Error getting initial data from queue: {e}")
 
     app = QApplication()
 
-    window = OverlayWindow(initial_image_bytes)
+    window = OverlayWindow(image_bytes)
     window.show()
+
+    #QTimer.singleShot(100, update_image)
 
     QTimer.singleShot(WARN_DURATION * 1000, app.quit)
 

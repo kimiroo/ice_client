@@ -1,7 +1,8 @@
 import logging
-from multiprocessing import Process, Queue
+from multiprocessing import Process
 import datetime
 
+from config import WARN_DURATION
 from overlay import run_qt
 from sound import run_audio
 
@@ -9,6 +10,8 @@ log = logging.getLogger(__name__)
 
 class WarnSession:
     def __init__(self):
+        self.last_warned = datetime.datetime(1900,1,1,0,0,0,0)
+
         self.qt_process = None
         self.is_qt_running = False
 
@@ -16,12 +19,18 @@ class WarnSession:
         self.is_audio_running = False
 
     def start(self, image_bytes: bytes = None):
-        log.info("Starting Warning Sequence...")
-        log.debug(datetime.datetime.now())
-        self._start_qt(image_bytes)
-        log.debug(datetime.datetime.now())
-        self._start_audio()
-        log.debug(datetime.datetime.now())
+
+
+        time_diff = datetime.datetime.now() - self.last_warned
+
+        if time_diff > datetime.timedelta(seconds=WARN_DURATION):
+            log.info("Starting Warning Sequence...")
+            self.last_warned = datetime.datetime.now()
+
+            self._start_qt(image_bytes)
+            self._start_audio()
+        else:
+            log.info("Ignoring warning...")
 
     def stop(self):
         log.info("Stopping Warning Sequence...")
@@ -35,27 +44,12 @@ class WarnSession:
             log.debug('Qt already running. Killing...')
             self._stop_qt()
 
-        # Create a queue for communication
-        input_queue = Queue()
-
         # Create a new process targeting run_qt
-        # Pass the queue to the target function
-        self.qt_process = Process(target=run_qt, args=(input_queue,))
+        self.qt_process = Process(target=run_qt, args=(image_bytes,))
         self.qt_process.daemon = False
 
         self.qt_process.start()
         self.is_qt_running = True
-
-        # Send image bytes via queue
-        if image_bytes:
-            input_queue.put({'type': 'INIT_IMAGE', 'data': image_bytes})
-            log.debug("Image data sent to GUI process via queue.")
-        else:
-            input_queue.put({'type': 'INIT_IMAGE', 'data': None})
-            log.warning("No image data given.")
-
-        input_queue.close()
-        input_queue.join_thread()
 
     def _stop_qt(self):
         log.debug("Killing Qt...")

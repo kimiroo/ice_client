@@ -6,10 +6,10 @@ import socket
 import base64
 import logging
 
-from config import WS_SERVER_IP, WS_SERVER_PORT
+from config import WS_SERVER_IP, WS_SERVER_PORT, RTSP_URL
 from warn import WarnSession
 from kill import kill
-from rtsp import Rtsp
+from rtsp import RTSP
 
 logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 log = logging.getLogger('main')
 warn = WarnSession()
-rtsp = Rtsp()
+rtsp = RTSP(RTSP_URL)
 
 
 async def send_heartbeat(websocket):
@@ -50,7 +50,7 @@ async def receive_messages(websocket):
                     kill(kill_type)
 
                 elif ws_msg == 'movement':
-                    image = rtsp.capture()
+                    image = rtsp.get_frame_bytes()
                     warn.start(image)
 
                 else:
@@ -97,4 +97,5 @@ async def connect_to_ha():
         await asyncio.sleep(5) # Wait before retrying connection
 
 if __name__ == "__main__":
+    rtsp.connect()
     asyncio.run(connect_to_ha())
