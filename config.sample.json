@@ -1,0 +1,28 @@
+{
+    "iceServerURL": "http://10.5.38.100:8080",
+    "clientName": "Client Name",
+    "cameraFrameURL": "http://10.5.47.10:1984/api/frame.jpeg?src=tapo_c100",
+    "obs": {
+        "host": "127.0.0.1",
+        "port": 4455,
+        "password": "yourPASSword"
+    },
+    "kill": {
+        "full": {
+            "obs": "stop",
+            "taskkill": ["BlueArchive.exe", "StarRail.exe"],
+            "commands": []
+        },
+        "partial": {
+            "obs": "stop",
+            "taskkill": ["StarRail.exe"],
+            "commands": []
+        },
+        "swap": {
+            "taskkill": [],
+            "commands": [
+                ["notepad", "C:\\Users\\yongj\\Desktop\\새 폴더\\test.txt"]
+            ]
+        }
+    }
+}

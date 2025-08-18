@@ -1,101 +1,237 @@
-import asyncio
-import websockets
-import json
-import platform
-import socket
-import base64
 import logging
-
-from config import WS_SERVER_IP, WS_SERVER_PORT, RTSP_URL
-from warn import WarnSession
-from kill import kill
-from rtsp import RTSP
 
 logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
-    level=logging.DEBUG,
-    datefmt='%m/%d/%Y %I:%M:%S %p',
+    level=logging.INFO,
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
+
+import sys
+import ctypes
+import datetime
+import asyncio
+import uuid
+
+import socketio
+import requests
+
+from utils.config import config
+from utils.states import states
+from objects.event import Event
+from warn.warn import WarnSession
+from kill.kill import Killer
+
 log = logging.getLogger('main')
+
+sio = socketio.AsyncClient()
 warn = WarnSession()
-rtsp = RTSP(RTSP_URL)
+kill = Killer(warn)
 
-
-async def send_heartbeat(websocket):
-    """Send a heartbeat message to the server."""
-    while True:
-        # Get IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("1.1.1.1", 80))
-        ip = s.getsockname()[0]
-        s.close()
-
-        # Send a simple heartbeat message
-        await websocket.send(json.dumps({"type": "heartbeat", "hostname": platform.node(), "ip": ip}))
-        await asyncio.sleep(1)  # Send heartbeat every 1 seconds
-
-
-async def receive_messages(websocket):
-    """Receive and process messages from the server."""
-    async for message in websocket:
-        log.debug(f"Received message from server: {message}")
-        try:
-            data = json.loads(message)
-            if data.get("type") == "broadcast":
-                ws_msg = data.get('message')
-                log.info(f"Broadcast Message: {ws_msg}")
-
-                if ws_msg == 'kill':
-                    kill_type = data.get('killType', 'default')
-                    kill(kill_type)
-
-                elif ws_msg == 'movement':
-                    image = rtsp.get_frame_bytes()
-                    warn.start(image)
-
-                else:
-                    log.error(f"Unknown ICE message: {ws_msg}")
-
-        except json.JSONDecodeError:
-            log.error(f"Received non-JSON message: {message}")
-        except Exception as e:
-            log.error(f"Error processing received message: {e}")
-
-
-def base64_to_img(base64_string):
+def is_admin_windows():
+    """Checks if the script is running with administrator privileges on Windows."""
     try:
-        decoded_bytes = base64.b64decode(base64_string)
-        return decoded_bytes
+        # Check if the process token has administrator privileges
+        return ctypes.windll.shell32.IsUserAnAdmin()
     except Exception as e:
-        log.critical(f"Error decoding Base64 string: {e}")
-        return None
+        return False
 
+async def handle_event(event, is_internal):
+    if not is_internal:
+        states.last_event_id = event['id']
+        await sio.emit('ack', {'id': event['id']})
 
-async def connect_to_ha():
-    """Connect to Home Assistant WebSocket server."""
-    uri = f"ws://{WS_SERVER_IP}:{WS_SERVER_PORT}"
+    event_obj = Event(is_internal=is_internal,
+                      id=event['id'],
+                      event=event['event'],
+                      type=event['type'],
+                      source=event['source'],
+                      timestamp=event['timestamp'],
+                      data=event.get('data', {}))
+
+    can_show = False
+
+    def get_camera_frame():
+        image_bytes = None
+        try:
+            response = requests.get(config.camera_frame_url)
+            response.raise_for_status()
+            image_bytes = response.content
+        except Exception as e:
+            log.error(f'Error getting camera frame: {e}')
+        return image_bytes
+
+    if event_obj.type == 'client' and event_obj.source == 'server':
+        log.info(f'[CLIENT] Client \'{event_obj.data['client']['name']}\' {event_obj.event}')
+
+    elif event_obj.event == 'zero_client' and event_obj.source == 'self' and not await states.is_previous_event_valid(event_obj.type, event_obj.event):
+        can_show = True
+        log.warning(f'[CLIENT] Zero client detected: PC: {len(states.client_list_pc)}, HA: {len(states.client_list_ha)}, HTML: {len(states.client_list_html)}')
+        warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'ZERO CLIENT', f'PC: {len(states.client_list_pc)}, HA: {len(states.client_list_ha)}, HTML: {len(states.client_list_html)}', no_audio=True)
+
+    elif event_obj.type == 'connection' and not await states.is_previous_event_valid(event_obj.type, event_obj.event):
+        can_show = True
+        log.warning(f'[CONNECTION] Server {event_obj.event}.')
+        warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', event_obj.event.upper(), 'SERVER DISCONNECTED', no_audio=True)
+
+    elif event_obj.type == 'onvif' and not await states.is_previous_event_valid(event_obj.type):
+        can_show = True
+        log.warning(f'[ONVIF] {event_obj.event.upper()} detected.')
+        warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'MOTION DETECTED', 'Loading...', is_priority=True)
+        image_bytes = get_camera_frame()
+        warn.update_image(image_bytes)
+
+    elif event_obj.type == 'user':
+        can_show = True
+        log.warning(f'[USER] {event_obj.event.upper()} Initiated. (Kill mode: {event_obj.data.get("killMode", "unknown")})')
+        if event_obj.event == 'kill':
+            kill_mode = event_obj.data.get('killMode', 'unknown')
+            warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'KILLING', f'KILLING...\n(mode: {kill_mode})', no_audio=True, is_priority=True)
+            kill.kill(kill_mode)
+        elif event_obj.event == 'ignore':
+            warn.stop('_force_stop_all')
+
+    if can_show:
+        await states.push_event(event_obj)
+
+@sio.event
+async def connect():
+    log.info('Connected to server. Introducing self...')
+    payload = {
+        'name': config.client_name,
+        'type': 'pc'
+    }
+    if states.last_event_id:
+        payload['lastEventID'] = states.last_event_id
+    await sio.emit('introduce', payload)
+
+@sio.event
+async def disconnect():
+    log.warning('Disconnected from server.')
+    states.is_connected = False
+    event_payload = {
+        'id': str(uuid.uuid4()),
+        'event': 'disconnected',
+        'type': 'connection',
+        'source': 'self',
+        'timestamp': datetime.datetime.now().isoformat()
+    }
+    await handle_event(event_payload, is_internal=True)
+
+@sio.on('event')
+async def on_event(data = {}):
+    await handle_event(data['event'], is_internal=False)
+
+@sio.on('event_ignored')
+async def on_event_ignored(data = {}):
+    log.debug(f'Event ignored: {data}')
+
+@sio.on('ping')
+async def on_ping(data = {}):
+    states.is_connected = True
+    states.last_heartbeat = datetime.datetime.now()
+    await sio.emit('get')
+
+@sio.on('get_result')
+async def on_get_result(data = {}):
+    event_list = data.get('eventList', {})
+    client_list = data.get('clientList', {})
+
+    states.is_armed = data.get('isArmed', False)
+
+    new_client_list_pc = []
+    new_client_list_ha = []
+    new_client_list_html = []
+
+    for client in client_list:
+        if client['type'] == 'pc':
+            new_client_list_pc.append(client)
+        elif client['type'] == 'ha':
+            new_client_list_ha.append(client)
+        elif client['type'] == 'html':
+            new_client_list_html.append(client)
+
+    states.client_list_pc = new_client_list_pc
+    states.client_list_ha = new_client_list_ha
+    states.client_list_html = new_client_list_html
+
+    if event_list:
+        log.warning(f'Detected a delay in processing event: {len(event_list)} events in queue')
+        for event in event_list:
+            await handle_event(event, is_internal=False)
+
+    await sio.emit('pong')
+
+    if (states.is_armed and
+        (len(states.client_list_pc) == 0 or
+         len(states.client_list_ha) == 0 or
+         len(states.client_list_html) == 0)):
+        event_payload = {
+            'id': str(uuid.uuid4()),
+            'event': 'zero_client',
+            'type': 'client',
+            'source': 'self',
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        await handle_event(event_payload, is_internal=True)
+    elif (states.is_armed and
+          (len(states.client_list_pc) > 0 or
+           len(states.client_list_ha) > 0 or
+           len(states.client_list_html) > 0)):
+        warn.stop('self_client_zero_client')
+
+async def connection_monitoring_worker():
+    await asyncio.sleep(1) # Grace startup (prevent rush alert)
     while True:
         try:
-            log.info(f"Connecting to {uri}...")
-            async with websockets.connect(uri) as websocket:
-                log.info(f"Connected to {uri}")
+            time_now = datetime.datetime.now()
+            time_diff = time_now - states.last_heartbeat
+            if not states.is_connected or time_diff.total_seconds() > 1:
+                states.is_connected = False
+                event_payload = {
+                    'id': str(uuid.uuid4()),
+                    'event': 'disconnected',
+                    'type': 'connection',
+                    'source': 'self',
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                await handle_event(event_payload, is_internal=True)
+            elif states.current_event == 'self_connection_disconnected':
+                warn.stop('self_connection_disconnected')
+            await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            log.info('Stopping connection monitoring worker...')
+            break
 
-                # Start sending heartbeats and receiving messages concurrently
-                await asyncio.gather(
-                    send_heartbeat(websocket),
-                    receive_messages(websocket)
-                )
+async def main():
+    while True:
+        log.info('Starting main loop...')
 
-        except websockets.exceptions.ConnectionClosed:
-            log.error(f"Connection closed. Retrying in 5 seconds...")
-        except ConnectionRefusedError:
-            log.error(f"Connection refused. Ensure Home Assistant is running and accessible at {uri}. Retrying in 5 seconds...")
-        except websockets.exceptions.WebSocketException as e:
-            log.error(f"WebSocket error: {e}. Retrying in 5 seconds...")
+        log.info('Starting background workers...')
+        task_event_cleaner = asyncio.create_task(states.clear_old_events_worker())
+        task_connection_monitoring = asyncio.create_task(connection_monitoring_worker())
+        task_obs = asyncio.create_task(kill.obs_connection_worker())
+
+        do_break = False
+        try:
+            await sio.connect(config.ice_server_url)
+            await sio.wait()
+        except KeyboardInterrupt:
+            log.info('Client stopped by user.')
+            do_break = True
         except Exception as e:
-            log.error(f"An unexpected error occurred: {e}. Retrying in 5 seconds...")
-        await asyncio.sleep(5) # Wait before retrying connection
+            log.error(f'Error in main loop: {e}')
+        finally:
+            sio.disconnect()
+            task_event_cleaner.cancel()
+            task_connection_monitoring.cancel()
+            task_obs.cancel()
+            asyncio.sleep(0.1)
+            if do_break:
+                break
 
-if __name__ == "__main__":
-    rtsp.connect()
-    asyncio.run(connect_to_ha())
+if __name__ == '__main__':
+    if not is_admin_windows():
+        log.critical(f'Client app is not running as administrator. Relaunch app with administrator privileges.')
+        log.info('Exiting...')
+        sys.exit(1)
+    asyncio.run(main())

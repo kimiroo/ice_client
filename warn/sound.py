@@ -4,7 +4,7 @@ import datetime
 import logging
 from ctypes import create_unicode_buffer, windll, wintypes
 
-from config import WARN_DURATION
+from utils.config import WARN_DURATION
 
 log = logging.getLogger(__name__)
 

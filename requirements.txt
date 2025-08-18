@@ -1,4 +1,4 @@
-websockets
-websocket-client
 pyside6
-python-socketio
+python-socketio[asyncio_client]
+requests
+obsws-python
