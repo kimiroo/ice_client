@@ -13,7 +13,7 @@ import asyncio
 import uuid
 
 import socketio
-import requests
+import aiohttp
 
 from utils.config import config
 from utils.states import states
@@ -50,14 +50,17 @@ async def handle_event(event, is_internal):
 
     can_show = False
 
-    def get_camera_frame():
+    async def get_camera_frame():
         image_bytes = None
         try:
-            response = requests.get(config.camera_frame_url)
-            response.raise_for_status()
-            image_bytes = response.content
-        except Exception as e:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(config.camera_frame_url) as response:
+                    response.raise_for_status()
+                    image_bytes = await response.read()
+        except aiohttp.ClientError as e:
             log.error(f'Error getting camera frame: {e}')
+        except Exception as e:
+            log.error(f'An unexpected error occurred: {e}')
         return image_bytes
 
     if event_obj.type == 'client' and event_obj.source == 'server':
@@ -78,7 +81,7 @@ async def handle_event(event, is_internal):
         await states.push_event(event_obj)
         log.warning(f'[ONVIF] {event_obj.event.upper()} detected.')
         warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'MOTION DETECTED', 'Loading...', is_priority=True)
-        image_bytes = get_camera_frame()
+        image_bytes = await get_camera_frame()
         warn.update_image(image_bytes)
 
     elif event_obj.type == 'user':
@@ -185,11 +188,7 @@ async def on_get_result(data = {}):
             'timestamp': datetime.datetime.now().isoformat()
         }
         await handle_event(event_payload, is_internal=True)
-    elif (states.is_armed and
-          (len(states.client_list_pc) > 0 or
-           len(states.client_list_ha) > 0 or
-           len(states.client_list_html) > 0)
-          and states.current_event == 'self_client_zero_client'):
+    elif (states.is_armed and states.current_event == 'self_client_zero_client'):
         warn.stop('self_client_zero_client')
 
 async def connection_monitoring_worker():
@@ -233,7 +232,7 @@ async def main():
             log.error(f'Error in main loop: {e}')
         finally:
             sio.disconnect()
-            asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
             if do_break:
                 break
 
