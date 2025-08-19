@@ -75,15 +75,7 @@ class Killer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-
-            # Await the process completion without blocking the event loop.
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0:
-                log.info(f'Successfully executed command: \'{command}\'.')
-            else:
-                error_msg = stderr.decode(errors='ignore').strip()
-                log.error(f'Failed to execute command: \'{command}\'. Return code: {process.returncode}, Error: {error_msg}')
+            log.info(f'Started background command: \'{command}\'. Process ID: {process.pid}')
 
         except FileNotFoundError:
             log.error(f"Command not found: '{command[0]}'. Check your system's PATH.")
