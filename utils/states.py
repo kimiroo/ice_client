@@ -44,6 +44,13 @@ class States:
 
             return False
 
+    async def is_event_duplicate(self, event_id: str):
+        async with self._lock:
+            for event in self.event_list:
+                if event.id == event_id:
+                    return True
+            return False
+
     async def clear_old_events(self):
         async with self._lock:
             time_now = datetime.datetime.now()

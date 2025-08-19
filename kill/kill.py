@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import subprocess
 from typing import Tuple, TYPE_CHECKING
 
 import obsws_python as obs
@@ -18,7 +17,7 @@ class Killer:
         self.obs = None
         self.warn = warn_session_instance
 
-    def kill(self, kill_mode: str):
+    async def kill(self, kill_mode: str):
         kill_config = config.kill_config.get(kill_mode, None)
 
         if kill_config is None:
@@ -30,42 +29,73 @@ class Killer:
         commands_list = kill_config.get('commands', [])
         obs_mode = kill_config.get('obs', None)
 
-        self._kill_processes(taskkill_list)
-        self._run_commands(commands_list)
+        await self.terminate_processes(taskkill_list)
+        await self._run_commands(commands_list)
 
         if obs_mode == 'stop' and config.obs_enabled:
-            try:
-                if self.obs is not None:
-                    self.obs.stop_record()
-                    log.info('Successfully stopped OBS recording.')
-                else:
-                    log.error(f'Failed to stop OBS recording: OBS Not connected')
-            except Exception as e:
-                log.error(f'Failed to stop OBS recording: {e}')
+            await self.stop_obs_recording()
 
+    async def _terminate_process(self, process: str) -> Tuple[bool, str]:
+        try:
+            process_obj = await asyncio.create_subprocess_exec(
+                'taskkill',
+                '/f',
+                '/im',
+                process,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process_obj.communicate()
 
-    def _kill_processes(self, process_list: list) -> Tuple[bool, str]:
-        for process in process_list:
-            try:
-                subprocess.run(['taskkill', '/f', '/im', process], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            if process_obj.returncode == 0:
                 log.info(f'Successfully terminated \'{process}\'.')
-            except subprocess.CalledProcessError as e:
-                log.info(f'Failed to terminate \'{process}\': {e}')
-            except Exception as e:
-                log.error(f'Unknown error occurred while terminating process \'{process}\': {e}')
+            else:
+                error_message = stderr.decode(errors='ignore').strip()
+                log.info(f'Failed to terminate \'{process}\': {error_message}')
 
-    def _run_commands(self, commands_list: list) -> Tuple[bool, str]:
-        for commands in commands_list:
-            try:
-                if type(commands) == list:
-                    subprocess.run(commands, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    log.info(f'Successfully executed command: \'{commands}\'.')
-                else:
-                    log.error(f'Command has to be in list format. \'{commands}\' is {type(commands)}.')
-            except subprocess.CalledProcessError as e:
-                log.error(f'Failed to execute command: \'{commands}\'')
-            except Exception as e:
-                log.error(f'Unknown error occurred while executing command \'{commands}\': {e}')
+        except Exception as e:
+            log.error(f'Unknown error occurred while terminating process \'{process}\': {e}')
+
+    async def terminate_processes(self, process_list: list):
+        # Create a list of tasks for each process to be terminated.
+        tasks = [self._terminate_process(process) for process in process_list]
+
+        # Run all tasks concurrently.
+        await asyncio.gather(*tasks)
+
+    async def _execute_command(self, command: list) -> None:
+        if not isinstance(command, list):
+            log.error(f'Command must be in list format. \'{command}\' is {type(command)}.')
+            return
+
+        try:
+            # Create a non-blocking subprocess.
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            # Await the process completion without blocking the event loop.
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                log.info(f'Successfully executed command: \'{command}\'.')
+            else:
+                error_msg = stderr.decode(errors='ignore').strip()
+                log.error(f'Failed to execute command: \'{command}\'. Return code: {process.returncode}, Error: {error_msg}')
+
+        except FileNotFoundError:
+            log.error(f"Command not found: '{command[0]}'. Check your system's PATH.")
+        except Exception as e:
+            log.error(f'Unknown error occurred while executing command \'{command}\': {e}')
+
+    async def _run_commands(self, commands_list: list) -> None:
+        # Create a list of tasks for each command.
+        tasks = [self._execute_command(command) for command in commands_list]
+
+        # Run all tasks concurrently and wait for them to complete.
+        await asyncio.gather(*tasks)
 
     async def obs_connection_worker(self):
         if not config.obs_enabled:
@@ -115,3 +145,16 @@ class Killer:
                     self.obs = None
 
             await asyncio.sleep(1)
+
+    async def stop_obs_recording(self):
+        try:
+            if self.obs is not None:
+                if self.obs.get_record_status():
+                    self.obs.stop_record()
+                    log.info('Successfully stopped OBS recording.')
+                else:
+                    log.info('Failed to stop OBS recording: OBS Not recording')
+            else:
+                log.error(f'Failed to stop OBS recording: OBS Not connected')
+        except Exception as e:
+            log.error(f'Failed to stop OBS recording: {e}')

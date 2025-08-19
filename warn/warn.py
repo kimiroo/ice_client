@@ -45,8 +45,13 @@ class WarnSession:
         self._start_qt(overlay_text, overlay_message)
 
     def stop(self, event_text: str):
+        time_now = datetime.datetime.now()
+        time_diff = time_now - self.last_warned
+        if time_diff.total_seconds() > config.warn_duration:
+            self.current_event_text = None
         if event_text == '_force_stop_all' or event_text == self.current_event_text:
             self._stop()
+            return
         log.info(f'Tried to dismiss non-matching event. Ignoring : given: {event_text}, current: {self.current_event_text}')
         return
 

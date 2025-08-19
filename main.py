@@ -61,37 +61,37 @@ async def handle_event(event, is_internal):
         return image_bytes
 
     if event_obj.type == 'client' and event_obj.source == 'server':
+        await states.push_event(event_obj)
         log.info(f'[CLIENT] Client \'{event_obj.data['client']['name']}\' {event_obj.event}')
 
     elif event_obj.event == 'zero_client' and event_obj.source == 'self' and not await states.is_previous_event_valid(event_obj.type, event_obj.event):
-        can_show = True
+        await states.push_event(event_obj)
         log.warning(f'[CLIENT] Zero client detected: PC: {len(states.client_list_pc)}, HA: {len(states.client_list_ha)}, HTML: {len(states.client_list_html)}')
         warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'ZERO CLIENT', f'PC: {len(states.client_list_pc)}, HA: {len(states.client_list_ha)}, HTML: {len(states.client_list_html)}', no_audio=True)
 
     elif event_obj.type == 'connection' and not await states.is_previous_event_valid(event_obj.type, event_obj.event):
-        can_show = True
+        await states.push_event(event_obj)
         log.warning(f'[CONNECTION] Server {event_obj.event}.')
         warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', event_obj.event.upper(), 'SERVER DISCONNECTED', no_audio=True)
 
     elif event_obj.type == 'onvif' and not await states.is_previous_event_valid(event_obj.type):
-        can_show = True
+        await states.push_event(event_obj)
         log.warning(f'[ONVIF] {event_obj.event.upper()} detected.')
         warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'MOTION DETECTED', 'Loading...', is_priority=True)
         image_bytes = get_camera_frame()
         warn.update_image(image_bytes)
 
     elif event_obj.type == 'user':
-        can_show = True
-        log.warning(f'[USER] {event_obj.event.upper()} Initiated. (Kill mode: {event_obj.data.get("killMode", "unknown")})')
+        await states.push_event(event_obj)
+
         if event_obj.event == 'kill':
+            log.warning(f'[USER] {event_obj.event.upper()} Initiated. (Kill mode: {event_obj.data.get("killMode", "unknown")})')
             kill_mode = event_obj.data.get('killMode', 'unknown')
             warn.start(f'{event_obj.source}_{event_obj.type}_{event_obj.event}', 'KILLING', f'KILLING...\n(mode: {kill_mode})', no_audio=True, is_priority=True)
-            kill.kill(kill_mode)
+            await kill.kill(kill_mode)
         elif event_obj.event == 'ignore':
+            log.info(f'[USER] {event_obj.event.upper()} Initiated.')
             warn.stop('_force_stop_all')
-
-    if can_show:
-        await states.push_event(event_obj)
 
 @sio.event
 async def connect():
@@ -155,10 +155,21 @@ async def on_get_result(data = {}):
     states.client_list_ha = new_client_list_ha
     states.client_list_html = new_client_list_html
 
-    if event_list:
+    new_event_list = []
+    acked_event_list = []
+    for event in event_list:
+        if not await states.is_event_duplicate(event['id']):
+            new_event_list.append(event)
+        else:
+            acked_event_list.append(event)
+
+    if new_event_list:
         log.warning(f'Detected a delay in processing event: {len(event_list)} events in queue')
-        for event in event_list:
-            await handle_event(event, is_internal=False)
+        tasks = [handle_event(event, is_internal=False) for event in new_event_list]
+        await asyncio.gather(*tasks)
+
+    for event in acked_event_list: # ACK again just to make sure
+        await sio.emit('ack', {'id': event['id']})
 
     await sio.emit('pong')
 
@@ -177,7 +188,8 @@ async def on_get_result(data = {}):
     elif (states.is_armed and
           (len(states.client_list_pc) > 0 or
            len(states.client_list_ha) > 0 or
-           len(states.client_list_html) > 0)):
+           len(states.client_list_html) > 0)
+          and states.current_event == 'self_client_zero_client'):
         warn.stop('self_client_zero_client')
 
 async def connection_monitoring_worker():
@@ -204,14 +216,12 @@ async def connection_monitoring_worker():
             break
 
 async def main():
+    log.info('Starting background workers...')
+    task_event_cleaner = asyncio.create_task(states.clear_old_events_worker())
+    task_connection_monitoring = asyncio.create_task(connection_monitoring_worker())
+    task_obs = asyncio.create_task(kill.obs_connection_worker())
     while True:
         log.info('Starting main loop...')
-
-        log.info('Starting background workers...')
-        task_event_cleaner = asyncio.create_task(states.clear_old_events_worker())
-        task_connection_monitoring = asyncio.create_task(connection_monitoring_worker())
-        task_obs = asyncio.create_task(kill.obs_connection_worker())
-
         do_break = False
         try:
             await sio.connect(config.ice_server_url)
@@ -223,9 +233,6 @@ async def main():
             log.error(f'Error in main loop: {e}')
         finally:
             sio.disconnect()
-            task_event_cleaner.cancel()
-            task_connection_monitoring.cancel()
-            task_obs.cancel()
             asyncio.sleep(0.1)
             if do_break:
                 break
