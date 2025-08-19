@@ -231,7 +231,7 @@ async def main():
         except Exception as e:
             log.error(f'Error in main loop: {e}')
         finally:
-            sio.disconnect()
+            await sio.disconnect()
             await asyncio.sleep(0.1)
             if do_break:
                 break
