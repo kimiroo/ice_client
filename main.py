@@ -96,6 +96,7 @@ async def handle_event(event, is_internal):
 @sio.event
 async def connect():
     log.info('Connected to server. Introducing self...')
+    states.last_heartbeat = datetime.datetime.now()
     payload = {
         'name': config.client_name,
         'type': 'pc'
