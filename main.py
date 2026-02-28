@@ -233,8 +233,8 @@ async def main():
         finally:
             await sio.disconnect()
             await asyncio.sleep(0.1)
-            if do_break:
-                break
+        if do_break:
+            break
 
 if __name__ == '__main__':
     if not is_admin_windows():
