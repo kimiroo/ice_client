@@ -8,7 +8,6 @@ def is_dependencies_installed():
     try:
         import PySide6
         import socketio
-        import requests
         import obsws_python
         return True
     except:
