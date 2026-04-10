@@ -38,7 +38,7 @@ class States:
             for event in self.event_list:
                 time_diff = time_now - event.timestamp
 
-                if time_diff.total_seconds() < config.warn_duration and event.type == event_type:
+                if time_diff.total_seconds() < config.warn_overlay_duration and event.type == event_type:
                     if event_name is None or event.event == event_name:
                         return True
 
@@ -57,7 +57,7 @@ class States:
 
             def is_valid_event(event: 'Event'):
                 time_diff = time_now - event.timestamp
-                return time_diff.total_seconds() < config.warn_duration
+                return time_diff.total_seconds() < config.warn_overlay_duration
 
             self.event_list = list(filter(is_valid_event, self.event_list))
 

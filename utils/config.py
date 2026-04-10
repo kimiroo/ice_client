@@ -7,7 +7,8 @@ CONFIG_PATH = 'config.json'
 log = logging.getLogger(__name__)
 
 # Warn Common
-WARN_DURATION = 10 # in seconds
+WARN_OVERLAY_DURATION = 10 # in seconds
+WARN_SOUND_LOOP = 2
 
 # Overlay
 WINDOW_WIDTH = 400
@@ -34,7 +35,7 @@ class Config:
 
         self.kill_config = {}
 
-        self.warn_duration = WARN_DURATION
+        self.warn_overlay_duration = WARN_OVERLAY_DURATION
         self.window_width = WINDOW_WIDTH
         self.window_height = WINDOW_HEIGHT
         self.global_opacity = GLOBAL_OPACITY

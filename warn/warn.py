@@ -32,7 +32,7 @@ class WarnSession:
         else:
             time_now = datetime.datetime.now()
             time_diff = time_now - self.last_warned
-            if time_diff.total_seconds() < config.warn_duration:
+            if time_diff.total_seconds() < config.warn_overlay_duration:
                 log.info(f'Ongoing warning \'{self.current_event_text}\' exists. Ignoring \'{event_text}\'')
                 return
 
@@ -47,7 +47,7 @@ class WarnSession:
     def stop(self, event_text: str):
         time_now = datetime.datetime.now()
         time_diff = time_now - self.last_warned
-        if time_diff.total_seconds() > config.warn_duration:
+        if time_diff.total_seconds() > config.warn_overlay_duration:
             self.current_event_text = None
         if event_text == '_force_stop_all' or event_text == self.current_event_text:
             self._stop()

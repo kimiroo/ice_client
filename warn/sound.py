@@ -4,7 +4,7 @@ import datetime
 import logging
 from ctypes import create_unicode_buffer, windll, wintypes
 
-from utils.config import WARN_DURATION
+from utils.config import WARN_SOUND_LOOP
 
 log = logging.getLogger(__name__)
 
@@ -58,13 +58,7 @@ def playsound(sound, block = True):
 def run_audio():
     log.debug("Starting Audio up...")
 
-    start = datetime.datetime.now()
-    while True:
-        # Check for warning duration
-        now = datetime.datetime.now()
-        diff = now - start
-        if diff >= datetime.timedelta(seconds=WARN_DURATION):
-            break
+    for i in range(WARN_SOUND_LOOP):
 
         playsound('warn.wav')
 

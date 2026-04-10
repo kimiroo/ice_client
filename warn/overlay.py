@@ -168,7 +168,7 @@ def run_qt(overlay_title: str, image_queue: Queue, overlay_message: str= None):
 
     # Set a total lifetime for the window
     lifetime_timer = QTimer()
-    lifetime_timer.singleShot(config.warn_duration * 1000, app.quit)
+    lifetime_timer.singleShot(config.warn_overlay_duration * 1000, app.quit)
 
     app.exec()
 
