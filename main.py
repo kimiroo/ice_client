@@ -2,7 +2,7 @@ import logging
 
 logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
-    level=logging.DEBUG,
+    level=logging.INFO,
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
@@ -47,8 +47,6 @@ async def handle_event(event, is_internal):
                       source=event['source'],
                       timestamp=event['timestamp'],
                       data=event.get('data', {}))
-
-    can_show = False
 
     async def get_camera_frame():
         image_bytes = None
@@ -216,25 +214,19 @@ async def connection_monitoring_worker():
 
 async def main():
     log.info('Starting background workers...')
-    task_event_cleaner = asyncio.create_task(states.clear_old_events_worker())
-    task_connection_monitoring = asyncio.create_task(connection_monitoring_worker())
-    task_obs = asyncio.create_task(kill.obs_connection_worker())
+    kill.start_worker()
+    asyncio.create_task(states.clear_old_events_worker())
+    asyncio.create_task(connection_monitoring_worker())
     while True:
         log.info('Starting main loop...')
-        do_break = False
         try:
             await sio.connect(config.ice_server_url)
             await sio.wait()
-        except KeyboardInterrupt:
-            log.info('Client stopped by user.')
-            do_break = True
         except Exception as e:
             log.error(f'Error in main loop: {e}')
         finally:
             await sio.disconnect()
             await asyncio.sleep(0.1)
-        if do_break:
-            break
 
 if __name__ == '__main__':
     if not is_admin_windows():

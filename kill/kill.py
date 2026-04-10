@@ -1,10 +1,10 @@
 import logging
 import asyncio
+from multiprocessing import Process, Queue
 from typing import Tuple, TYPE_CHECKING
 
-import obsws_python as obs
-
 from utils.config import config
+from kill.obs import start_obs_worker
 
 if TYPE_CHECKING:
     from warn.warn import WarnSession
@@ -16,6 +16,14 @@ class Killer:
     def __init__(self, warn_session_instance: 'WarnSession'):
         self.obs = None
         self.warn = warn_session_instance
+        self.obs_queue = Queue()
+
+        self.obs_worker = None
+
+    def start_worker(self):
+        self.obs_worker = Process(target=start_obs_worker, args=(self.obs_queue, ))
+        self.obs_worker.daemon = False
+        self.obs_worker.start()
 
     async def kill(self, kill_mode: str):
         kill_config = config.kill_config.get(kill_mode, None)
@@ -27,13 +35,12 @@ class Killer:
 
         taskkill_list = kill_config.get('taskkill', [])
         commands_list = kill_config.get('commands', [])
-        obs_mode = kill_config.get('obs', None)
 
         await self.terminate_processes(taskkill_list)
         await self._run_commands(commands_list)
 
-        if obs_mode == 'stop' and config.obs_enabled:
-            await self.stop_obs_recording()
+        # Send OBS worker stop signal
+        self.obs_queue.put_nowait({'kill': True})
 
     async def _terminate_process(self, process: str) -> Tuple[bool, str]:
         try:
@@ -88,65 +95,3 @@ class Killer:
 
         # Run all tasks concurrently and wait for them to complete.
         await asyncio.gather(*tasks)
-
-    async def obs_connection_worker(self):
-        if not config.obs_enabled:
-            log.info('OBS connection worker is disabled.')
-            return
-
-        log.info('Starting OBS connection worker...')
-        try:
-            self.obs = obs.ReqClient(
-                host=config.obs_host,
-                port=config.obs_port,
-                password=config.obs_password,
-                timeout=3
-            )
-            log.info('Successfully connected to OBS.')
-        except Exception as e:
-            log.error(f'Failed to connect to OBS: {e}')
-        while True:
-            try:
-                # Check for existing connection.
-                # If connected, this call will succeed.
-                # If not, it will raise an exception.
-                self.obs.get_version()
-                log.debug('OBS connection is active. Waiting...')
-            except asyncio.CancelledError:
-                log.info('Stopping OBS connection worker...')
-                break  # Exit the loop on cancellation
-            except Exception as e:
-                # Catch any other exception to handle connection issues.
-                log.debug(f'OBS connection failed: {e}. Attempting to reconnect...')
-                self.obs = None # Ensure old client is not used
-
-                try:
-                    # Attempt to create a new connection
-                    self.obs = obs.ReqClient(
-                        host=config.obs_host,
-                        port=config.obs_port,
-                        password=config.obs_password,
-                        timeout=1
-                    )
-                    log.info('Successfully reconnected to OBS.')
-                except asyncio.CancelledError:
-                    log.info('Stopping OBS connection worker...')
-                    break
-                except Exception as e:
-                    log.error(f'Failed to connect to OBS: {e}. Retrying in 1 second...')
-                    self.obs = None
-
-            await asyncio.sleep(1)
-
-    async def stop_obs_recording(self):
-        try:
-            if self.obs is not None:
-                if self.obs.get_record_status():
-                    self.obs.stop_record()
-                    log.info('Successfully stopped OBS recording.')
-                else:
-                    log.info('Failed to stop OBS recording: OBS Not recording')
-            else:
-                log.error(f'Failed to stop OBS recording: OBS Not connected')
-        except Exception as e:
-            log.error(f'Failed to stop OBS recording: {e}')
