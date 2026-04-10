@@ -74,6 +74,7 @@ class OverlayWindow(QWidget):
                 )
 
                 self.image = new_image
+                self.overlay_message = None
                 self.update()  # Trigger repaint
                 log.debug('Image updated successfully')
             else:
