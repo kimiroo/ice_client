@@ -6,9 +6,11 @@ def is_venv():
 
 def is_dependencies_installed():
     try:
+        import aiohttp
+        import obsws_python
+        import psutil
         import PySide6
         import socketio
-        import obsws_python
         return True
     except:
         return False

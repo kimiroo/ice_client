@@ -1,5 +1,5 @@
-pyside6
-python-socketio[asyncio_client]
 aiohttp
 obsws-python
 psutil
+pyside6
+python-socketio[asyncio_client]
